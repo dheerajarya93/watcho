@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Stream - Enhanced Player</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; background: #111; color: #fff; }
+    header { background: #202020; padding: 1rem; text-align: center; font-size: 1.5rem; color: #e50914; }
+    #searchBar { display: flex; justify-content: center; padding: 1rem; background: #181818; }
+    #searchInput { width: 90%; max-width: 500px; padding: 0.5rem; border-radius: 4px; border: none; font-size: 1rem; }
+    #movieList { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; padding: 1rem; }
+    .movie { background: #181818; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.3); text-align: center; padding-bottom: 0.5rem; }
+    .movie img { width: 100%; height: 160px; object-fit: cover; cursor: pointer; }
+    .movie h2 { font-size: 0.85rem; margin: 0.5rem; color: #fff; }
+    .loading { text-align: center; color: #888; padding: 1rem; }
+    #errorMsg { text-align: center; padding: 1rem; color: orange; display: none; }
+    .player-wrapper { position: relative; width: 100%; background: #000; }
+    .custom-video { width: 100%; height: auto; background: #000; }
+    .controls {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.4rem 0.5rem;
+      gap: 0.5rem;
+      box-sizing: border-box;
+    }
+    .controls button,
+    .controls input[type="range"],
+    .controls select,
+    .controls span {
+      background: none;
+      border: none;
+      color: white;
+      font-size: 0.8rem;
+      flex-shrink: 0;
+    }
+    .controls input[type="range"] {
+      flex-grow: 1;
+      max-width: 100%;
+    }
+    .controls .time {
+      min-width: 80px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .loading-spinner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <header>Smart Stream</header>
+  <div id="searchBar">
+    <input type="text" id="searchInput" placeholder="Search movies or shows..." />
+  </div>
+  <div id="movieList"></div>
+  <div class="loading" id="loadingMsg" style="display:none;">Loading more...</div>
+  <div id="errorMsg">Some videos couldn't be loaded. Please try again later.</div>
+
+  <script>
+    let page = 1, isLoading = false, isEnd = false, fallbackMode = false, failedCount = 0, searchQuery = "";
+
+    function isValidVideoFile(file) {
+      const name = file.name.toLowerCase();
+      return ['.mp4', '.webm', '.ogv'].some(ext => name.endsWith(ext)) && file.size > 5 * 1024 * 1024;
+    }
+
+    async function fetchVideoData(identifier) {
+      try {
+        const res = await fetch(`https://archive.org/metadata/${identifier}`);
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const videoFile = data.files.find(isValidVideoFile);
+        const thumb = data.files.find(f => /thumb\.jpg$/i.test(f.name)) || data.files.find(f => /\.jpg$/i.test(f.name));
+        if (videoFile) {
+          return {
+            title: data.metadata.title || identifier,
+            url: `https://archive.org/download/${identifier}/${videoFile.name}`,
+            thumb: thumb ? `https://archive.org/download/${identifier}/${thumb.name}` : 'https://via.placeholder.com/300x200?text=No+Thumbnail'
+          };
+        }
+      } catch (e) { failedCount++; return null; }
+    }
+
+    async function loadVideos(reset = false) {
+      if (isLoading || isEnd) return;
+      if (reset) {
+        page = 1; isEnd = false; failedCount = 0;
+        document.getElementById("movieList").innerHTML = '';
+        document.getElementById("errorMsg").style.display = "none";
+      }
+      isLoading = true;
+      document.getElementById("loadingMsg").style.display = "block";
+
+      const baseQuery = `${fallbackMode ? 'mediatype:(movies OR video)' : 'collection:(feature_films OR classic_tv OR moviesandfilms OR television) AND mediatype:(movies OR video)'}${searchQuery.trim() ? ` AND title:(${searchQuery.trim()})` : ''}`;
+      const url = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(baseQuery)}&fl[]=identifier&sort[]=downloads+desc&rows=20&page=${page}&output=json`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const items = data.response.docs;
+
+      if (!items.length) { if (!fallbackMode) { fallbackMode = true; page = 1; loadVideos(true); return; } isEnd = true; document.getElementById("loadingMsg").style.display = "none"; return; }
+
+      await Promise.all(items.map(async (item) => {
+        const video = await fetchVideoData(item.identifier);
+        if (!video) return;
+        const card = document.createElement("div");
+        card.className = "movie";
+        card.innerHTML = `
+          <img src="${video.thumb}" alt="Thumbnail" class="thumbnail">
+          <div class="player-wrapper" style="display:none">
+            <video class="custom-video" src="${video.url}" poster="${video.thumb}"></video>
+            <div class="loading-spinner">⏳ Loading...</div>
+            <div class="controls">
+              <button class="playPause">▶️</button>
+              <input type="range" class="progress" value="0">
+              <span class="time">0:00 / 0:00</span>
+              <button class="mute">🔊</button>
+              <button class="fullscreen">⛶</button>
+              <select class="speed">
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </div>
+          </div>
+          <h2>${video.title}</h2>`;
+        document.getElementById("movieList").appendChild(card);
+
+        const wrapper = card.querySelector(".player-wrapper");
+        const thumb = card.querySelector(".thumbnail");
+        const vid = wrapper.querySelector("video");
+        const spinner = wrapper.querySelector(".loading-spinner");
+        const playBtn = wrapper.querySelector(".playPause");
+        const progress = wrapper.querySelector(".progress");
+        const time = wrapper.querySelector(".time");
+        const muteBtn = wrapper.querySelector(".mute");
+        const fullscreenBtn = wrapper.querySelector(".fullscreen");
+        const speedSelect = wrapper.querySelector(".speed");
+
+        thumb.onclick = () => {
+          thumb.style.display = 'none';
+          wrapper.style.display = 'block';
+          document.querySelectorAll("video").forEach(v => v.pause());
+          spinner.style.display = 'block';
+          vid.play();
+        };
+
+        vid.addEventListener("loadedmetadata", () => {
+          const dur = `${Math.floor(vid.duration / 60)}:${String(Math.floor(vid.duration % 60)).padStart(2, '0')}`;
+          time.dataset.total = dur;
+        });
+
+        vid.addEventListener("canplay", () => { spinner.style.display = 'none'; playBtn.textContent = "⏸️"; });
+        vid.ontimeupdate = () => {
+          const cur = `${Math.floor(vid.currentTime / 60)}:${String(Math.floor(vid.currentTime % 60)).padStart(2, '0')}`;
+          time.textContent = `${cur} / ${time.dataset.total || '0:00'}`;
+          progress.value = (vid.currentTime / vid.duration) * 100;
+        };
+        progress.oninput = () => { vid.currentTime = (progress.value / 100) * vid.duration; };
+        playBtn.onclick = () => {
+          if (vid.paused) { document.querySelectorAll("video").forEach(v => v.pause()); vid.play(); playBtn.textContent = "⏸️"; }
+          else { vid.pause(); playBtn.textContent = "▶️"; }
+        };
+        vid.onended = () => { playBtn.textContent = "▶️"; };
+        muteBtn.onclick = () => {
+          vid.muted = !vid.muted;
+          muteBtn.textContent = vid.muted ? "🔇" : "🔊";
+        };
+        fullscreenBtn.onclick = () => {
+          if (vid.requestFullscreen) vid.requestFullscreen();
+          else if (vid.webkitRequestFullscreen) vid.webkitRequestFullscreen();
+          else if (vid.msRequestFullscreen) vid.msRequestFullscreen();
+        };
+        speedSelect.onchange = () => { vid.playbackRate = parseFloat(speedSelect.value); };
+      }));
+
+      page++;
+      isLoading = false;
+      document.getElementById("loadingMsg").style.display = "none";
+    }
+
+    document.getElementById("searchInput").addEventListener("keyup", (e) => {
+      if (e.key === "Enter") { searchQuery = e.target.value; fallbackMode = false; loadVideos(true); }
+    });
+    window.addEventListener("scroll", () => {
+      if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 300) loadVideos();
+    });
+
+    loadVideos();
+  </script>
+</body>
+</html>
